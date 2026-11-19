@@ -5,6 +5,7 @@ import torch
 import json
 import torch.nn as nn
 import torch.nn.functional as F
+import base64
 import string
 import Levenshtein
 from torch.utils.data import Dataset, DataLoader
@@ -69,6 +70,32 @@ def closest_word(word, vocabulary):
                 closest_distance = distance
                 closest_word = vocab_word
         return closest_word
+    
+# weight matrix -> int8 bytes (base64) plus one scale: w ~ scale * q
+def quantize(t):
+    t = t.double().cpu()
+    scale = t.abs().max().item() / 127
+    q = torch.round(t / scale).clamp(-127, 127).to(torch.int8).contiguous()
+    return {
+        "scale": scale,
+        "rows": t.shape[0],
+        "cols": t.shape[1],
+        "data": base64.b64encode(q.numpy().tobytes()).decode("ascii"),
+    }
+
+# biases are tiny, so keep them as plain rounded floats
+def bias_list(t):
+    return torch.round(t.double().cpu(), decimals=4).tolist()
+
+# lua conversion helper
+def to_lua(x):
+    if isinstance(x, dict):
+        return "{" + ",".join(f"{k}={to_lua(v)}" for k, v in x.items()) + "}"
+    if isinstance(x, list):
+        return "{" + ",".join(to_lua(v) for v in x) + "}"
+    if isinstance(x, str):
+        return json.dumps(x)   # quoted string; "\n" escapes are valid Lua too
+    return repr(x)             # numbers
 
 # create dataset from data directory
 class ConvoDataset(Dataset):
@@ -95,7 +122,6 @@ class ConvoDataset(Dataset):
                                 self.pairs.append((block_to_indices(prompt, self.vocabulary),
                                                    block_to_indices(response, self.vocabulary)))
                             history.append(line + "\n")
-        json.dump()
 
     def __len__(self):
         return len(self.pairs)
@@ -121,7 +147,6 @@ class ChatGRU(nn.Module):
 
 # create model
 alldata = ConvoDataset('data')
-print(alldata.vocabulary)
 model = ChatGRU(len(alldata.vocabulary), hidden_size=128)
 
 # train the model
@@ -153,9 +178,31 @@ def train(model, dataset, n_epochs=10, learning_rate=0.001):
 
         if avg_loss < best_loss:
             best_loss = avg_loss
-            torch.save(model.state_dict(), os.path.join(directory, "model.pth"))
+            torch.save(model.state_dict(), os.path.join(directory, "new_model.pth"))
             print(f"Epoch {epoch + 1}/{n_epochs}, Loss: {avg_loss:.4f} (best), Learning Rate: {lr:.6f}")
         else:
             print(f"Epoch {epoch + 1}/{n_epochs}, Loss: {avg_loss:.4f}, Best Loss: {best_loss:.4f}, Learning Rate: {lr:.6f}")
+            
+    final = torch.load(os.path.join(directory, "new_model.pth"), map_location="cpu")
+    print("Done. Dumping model .lua...")
+    data = {
+        "vocabulary": alldata.vocabulary,
+        "hidden_size": final["gru.weight_hh_l0"].shape[1],
+        "weight_ih": quantize(final["gru.weight_ih_l0"]),   # (3H, V), rows ordered r, z, n
+        "weight_hh": quantize(final["gru.weight_hh_l0"]),   # (3H, H)
+        "bias_ih": bias_list(final["gru.bias_ih_l0"]),      # (3H)
+        "bias_hh": bias_list(final["gru.bias_hh_l0"]),      # (3H)
+        "out_weight": quantize(final["out.weight"]),        # (V, H)
+        "out_bias": bias_list(final["out.bias"]),           # (V)
+    }
+    export = "return {"
+    for key, val in data.items():
+        export += key + "=" + to_lua(val) + ","
+    export += "}"
+    
+    with open(os.path.join(directory, "model.lua"), "w", encoding="utf-8") as f:
+        f.write(export)
+        
+    print(f"Wrote model.lua ({os.path.getsize(os.path.join(directory, 'model.lua')) / 1e6:.2f} MB)")
 
-train(model, alldata, n_epochs=30, learning_rate=0.005)
+train(model, alldata, n_epochs=7, learning_rate=0.005)
