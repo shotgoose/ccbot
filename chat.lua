@@ -2,7 +2,7 @@ local model = dofile("model.lua")
 
 -- settings
 local MAX_WORDS = 30        -- cap on response length (the model has no end-of-sequence token)
-local TEMPERATURE = 0.0     -- 0 = always pick the most likely word; try 0.5-1.0 for variety
+local TEMPERATURE = 0.8     -- 0 = always pick the most likely word; try 0.5-1.0 for variety
 local STOP_TOKENS = { ["\n"] = true, ["you:"] = true, ["bot:"] = true }
 
 -- string to table
@@ -244,7 +244,7 @@ end
 
 ---------------------------------------------------------------- chat loop
 math.randomseed(os.time())
-print("Type 'reset' to clear the conversation, 'quit' to exit.")
+print("Model v2\nType 'reset' to clear memory, 'quit' to exit.")
 local history = {}
 while true do
     io.write("> ")
@@ -256,7 +256,7 @@ while true do
         break
     elseif input:lower() == "reset" then
         history = {}
-        print("(conversation cleared)")
+        print("(memory cleared)")
     elseif input ~= "" then
         history[#history + 1] = "you: " .. input
         local response = reply(history)
