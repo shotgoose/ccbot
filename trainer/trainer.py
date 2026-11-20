@@ -172,6 +172,7 @@ def train(model, dataset, n_epochs=10, learning_rate=0.001):
             output, _ = model(input_tensor)                  # (1, T, vocab)
             loss = criterion(output.view(-1, len(alldata.vocabulary)), target_tensor.view(-1))
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             total_loss += loss.item()
         avg_loss = total_loss / len(data_loader)
@@ -205,4 +206,4 @@ def train(model, dataset, n_epochs=10, learning_rate=0.001):
         
     print(f"Wrote model.lua ({os.path.getsize(os.path.join(directory, 'model.lua')) / 1e6:.2f} MB)")
 
-train(model, alldata, n_epochs=30, learning_rate=0.005)
+train(model, alldata, n_epochs=30, learning_rate=0.003)
